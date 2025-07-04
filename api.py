@@ -714,10 +714,11 @@ if __name__ == "__main__":
     print("\nPressione CTRL+C para parar o servidor\n")
     
     # Configurações do servidor
-    uvicorn.run(
-        "api:app",  # Se o arquivo se chamar api.py
-        "host="0.0.0.0",  # Em vez de "127.0.0.1"  # Aceita conexões de qualquer IP
-        port=int(os.environ.get("PORT", 8000)),
-        reload=True,  # Recarrega automaticamente ao salvar o arquivo
-        log_level="info"  # Nível de log
-    )
+# Correct code
+uvicorn.run(
+    "api:app",
+    host="0.0.0.0",  # Ensure this string is correctly quoted
+    port=8000,
+    reload=True,
+    log_level="info"
+)
