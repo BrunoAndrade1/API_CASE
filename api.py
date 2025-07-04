@@ -701,25 +701,3 @@ predictKickstarterProject();"""
 # EXECUTAR SERVIDOR
 # =====================================================
 
-if __name__ == "__main__":
-    import uvicorn
-    
-    print("\n" + "="*60)
-    print("🚀 KICKSTARTER SUCCESS PREDICTOR API")
-    print("="*60)
-    print("\n📌 Documentação interativa: http://localhost:8000/docs")
-    print("📌 Documentação alternativa: http://localhost:8000/redoc")
-    print("📌 Testar predição: POST http://localhost:8000/predict")
-    print("\n✨ Dica: Use a documentação interativa para testar a API!")
-    print("\nPressione CTRL+C para parar o servidor\n")
-    
-    # Configurações do servidor
-# Correct code
-# Em api.py
-uvicorn.run(
-    "api:app",
-    host="0.0.0.0",
-    port=8000,
-    reload=False,  # <-- Mude para False
-    log_level="info"
-)
