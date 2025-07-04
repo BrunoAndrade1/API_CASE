@@ -6,7 +6,7 @@ Para executar em produção (ex: no Render):
 2. Use o comando de início: uvicorn api:app --host 0.0.0.0 --port 10000
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 from typing import List, Optional
@@ -15,7 +15,15 @@ import joblib
 import pandas as pd
 import numpy as np
 import os
+import requests
 from ml_classes import KickstarterPreprocessor, KickstarterPredictor
+
+# Importações adicionais para treinamento
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.metrics import roc_auc_score, precision_recall_curve
+import warnings
+warnings.filterwarnings('ignore')
 
 # =====================================================
 # CONFIGURAÇÃO DA API
@@ -170,22 +178,137 @@ class HealthCheck(BaseModel):
 
 
 # =====================================================
-# CARREGAR MODELO
+# VARIÁVEIS GLOBAIS E FUNÇÕES AUXILIARES
 # =====================================================
 
 MODEL_PATH = 'kickstarter_model_v1.pkl'
+DATA_URL = 'https://s3-api.us-geo.objectstorage.softlayer.net/cf-courses-data/CognitiveClass/ML0114ENv3/Dataset/kickstarter_grading.csv'
 model_data = None
 predictor = None
+training_in_progress = False
+
+def download_data():
+    """Baixa os dados do Kickstarter se não existirem"""
+    print("Baixando dados do Kickstarter...")
+    try:
+        response = requests.get(DATA_URL)
+        with open('kickstarter_data.csv', 'wb') as f:
+            f.write(response.content)
+        print("✓ Dados baixados com sucesso!")
+        return True
+    except Exception as e:
+        print(f"Erro ao baixar dados: {e}")
+        return False
+
+def train_model_async():
+    """Treina o modelo de forma assíncrona"""
+    global model_data, predictor, training_in_progress
+    
+    training_in_progress = True
+    
+    try:
+        print("\n" + "="*80)
+        print("INICIANDO TREINAMENTO DO MODELO")
+        print("="*80)
+        
+        # Baixar dados se necessário
+        if not os.path.exists('kickstarter_data.csv'):
+            if not download_data():
+                raise Exception("Falha ao baixar dados")
+        
+        # Carregar dados
+        print("\n[1/7] Carregando dados...")
+        df = pd.read_csv('kickstarter_data.csv', encoding='latin-1')
+        df.columns = df.columns.str.strip()
+        print(f"✓ Dados carregados: {len(df):,} projetos")
+        
+        # Filtrar projetos finalizados
+        print("\n[2/7] Filtrando projetos...")
+        df = df[df['state'].isin(['failed', 'successful'])]
+        df['success'] = (df['state'] == 'successful').astype(int)
+        print(f"✓ Projetos válidos: {len(df):,}")
+        
+        # Dividir dados
+        print("\n[3/7] Dividindo dados...")
+        train_df, test_df = train_test_split(df, test_size=0.2, random_state=42, stratify=df['success'])
+        
+        # Criar e ajustar preprocessador
+        print("\n[4/7] Criando preprocessador...")
+        preprocessor = KickstarterPreprocessor()
+        preprocessor.fit(train_df)
+        
+        # Transformar dados
+        print("\n[5/7] Transformando dados...")
+        X_train = preprocessor.transform(train_df)
+        X_test = preprocessor.transform(test_df)
+        y_train = train_df['success'].values
+        y_test = test_df['success'].values
+        
+        # Treinar modelo
+        print("\n[6/7] Treinando modelo...")
+        model = GradientBoostingClassifier(
+            n_estimators=100,      # Reduzido para treinar mais rápido
+            learning_rate=0.1,
+            max_depth=5,
+            min_samples_split=50,
+            min_samples_leaf=20,
+            subsample=0.8,
+            random_state=42
+        )
+        model.fit(X_train, y_train)
+        
+        # Avaliar modelo
+        print("\n[7/7] Avaliando modelo...")
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
+        auc_roc = roc_auc_score(y_test, y_pred_proba)
+        
+        # Encontrar threshold ótimo
+        precisions, recalls, thresholds = precision_recall_curve(y_test, y_pred_proba)
+        f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-10)
+        optimal_idx = np.argmax(f1_scores)
+        optimal_threshold = thresholds[optimal_idx] if optimal_idx < len(thresholds) else 0.5
+        
+        # Salvar modelo
+        model_data = {
+            'model': model,
+            'preprocessor': preprocessor,
+            'optimal_threshold': optimal_threshold,
+            'feature_names': preprocessor.features_selected,
+            'version': '1.0',
+            'training_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'metrics': {
+                'auc_roc': auc_roc,
+                'n_train': len(train_df),
+                'n_test': len(test_df)
+            }
+        }
+        
+        joblib.dump(model_data, MODEL_PATH)
+        
+        # Criar predictor
+        predictor = KickstarterPredictor(
+            model=model_data['model'],
+            preprocessor=model_data['preprocessor'],
+            threshold=model_data['optimal_threshold']
+        )
+        
+        print(f"\n✓ Modelo treinado com sucesso!")
+        print(f"  AUC-ROC: {auc_roc:.4f}")
+        print(f"  Threshold: {optimal_threshold:.3f}")
+        
+    except Exception as e:
+        print(f"\n❌ Erro no treinamento: {e}")
+        
+    finally:
+        training_in_progress = False
 
 def load_model():
     """Carrega o modelo do disco"""
     global model_data, predictor
     
     if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(
-            f"Modelo não encontrado em '{MODEL_PATH}'. "
-            "Execute o script de treinamento primeiro."
-        )
+        print(f"⚠️ Modelo não encontrado. Use o endpoint /train para treinar um novo modelo.")
+        return False
     
     print(f"Carregando modelo de '{MODEL_PATH}'...")
     model_data = joblib.load(MODEL_PATH)
@@ -200,6 +323,8 @@ def load_model():
     print(f"  Versão: {model_data['version']}")
     print(f"  Treinado em: {model_data['training_date']}")
     print(f"  AUC-ROC: {model_data['metrics']['auc_roc']:.4f}")
+    
+    return True
 
 # Tentar carregar modelo ao iniciar a aplicação
 @app.on_event("startup")
@@ -207,10 +332,8 @@ async def startup_event():
     try:
         load_model()
     except Exception as e:
-        print(f"⚠️ Erro CRÍTICO ao carregar modelo na inicialização: {e}")
-        # Em um app real, você poderia decidir se a API deve ou não iniciar sem o modelo.
-        # Por enquanto, apenas logamos o erro. O endpoint de health check irá falhar.
-        pass
+        print(f"⚠️ Modelo não carregado na inicialização: {e}")
+        print("Use o endpoint /train para treinar um novo modelo")
 
 # =====================================================
 # ENDPOINTS DA API
@@ -223,9 +346,12 @@ async def root():
         "message": "Kickstarter Success Predictor API",
         "version": "1.0.0",
         "status": "online" if predictor else "modelo não carregado",
+        "model_exists": os.path.exists(MODEL_PATH),
+        "training_in_progress": training_in_progress,
         "endpoints": {
             "documentação_interativa": "/docs",
             "documentação_alternativa": "/redoc",
+            "treinar_modelo": "/train",
             "fazer_predição": "/predict",
             "predição_em_lote": "/predict/batch",
             "informações_do_modelo": "/info/model",
@@ -247,15 +373,44 @@ async def health_check():
     }
 
 
+@app.post("/train", tags=["Training"])
+async def train_model(background_tasks: BackgroundTasks):
+    """
+    Inicia o treinamento de um novo modelo.
+    O treinamento é feito em background.
+    """
+    global training_in_progress
+    
+    if training_in_progress:
+        return {
+            "status": "training_already_in_progress",
+            "message": "Um treinamento já está em andamento"
+        }
+    
+    # Adicionar tarefa de treinamento em background
+    background_tasks.add_task(train_model_async)
+    
+    return {
+        "status": "training_started",
+        "message": "Treinamento iniciado em background. Use /health para verificar quando estiver pronto."
+    }
+
+
 @app.post("/predict", response_model=PredictionOutput, tags=["Prediction"])
 async def predict_project(project: ProjectInput):
     """
     Faz predição para um único projeto Kickstarter.
     """
+    if training_in_progress:
+        raise HTTPException(
+            status_code=503,
+            detail="Modelo está sendo treinado. Aguarde alguns minutos."
+        )
+    
     if not predictor:
         raise HTTPException(
             status_code=503,
-            detail="Modelo não está carregado. Verifique os logs do servidor."
+            detail="Modelo não está carregado. Use o endpoint /train para treinar um novo modelo."
         )
     
     try:
@@ -275,10 +430,16 @@ async def predict_batch(batch: BatchInput):
     """
     Faz predição para múltiplos projetos de uma vez.
     """
+    if training_in_progress:
+        raise HTTPException(
+            status_code=503,
+            detail="Modelo está sendo treinado. Aguarde alguns minutos."
+        )
+    
     if not predictor:
         raise HTTPException(
             status_code=503,
-            detail="Modelo não está carregado."
+            detail="Modelo não está carregado. Use o endpoint /train para treinar um novo modelo."
         )
     
     results = []
@@ -390,5 +551,3 @@ async def get_countries():
             "BR": "Brasil"
         }
     }
-
-# (O restante dos endpoints de exemplo foram omitidos por brevidade, mas podem ser mantidos se desejar)
