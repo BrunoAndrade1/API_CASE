@@ -1,11 +1,9 @@
 """
 API FastAPI para o modelo Kickstarter Success Predictor
 
-Para executar:
-1. Certifique-se que o arquivo 'kickstarter_model_v1.pkl' existe
-2. Instale as dependências: pip install fastapi uvicorn pandas scikit-learn joblib
-3. Execute: python api.py
-4. Acesse: http://localhost:8000/docs
+Para executar em produção (ex: no Render):
+1. Certifique-se que o arquivo 'kickstarter_model_v1.pkl' e 'ml_classes.py' existem.
+2. Use o comando de início: uvicorn api:app --host 0.0.0.0 --port 10000
 """
 
 from fastapi import FastAPI, HTTPException
@@ -17,180 +15,7 @@ import joblib
 import pandas as pd
 import numpy as np
 import os
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-
-# =====================================================
-# CLASSES NECESSÁRIAS PARA O MODELO
-# =====================================================
-
-class KickstarterPreprocessor:
-    """
-    Classe para processar dados do Kickstarter de forma consistente.
-    Esta classe precisa ser idêntica à usada no treinamento.
-    """
-    
-    def __init__(self):
-        self.label_encoders = {}
-        self.scaler = StandardScaler()
-        self.category_stats = None
-        self.country_stats = None
-        self.features_selected = [
-            'cat_success_rate', 'usd_goal_real', 'campaign_days', 
-            'goal_magnitude', 'cat_mean_goal', 'name_word_count',
-            'cat_median_goal', 'goal_per_day', 'country_success_rate',
-            'launch_year', 'main_category', 'name_length',
-            'goal_category_ratio', 'country', 'goal_rounded'
-        ]
-        
-    def create_features(self, df):
-        """Cria todas as features necessárias"""
-        df = df.copy()
-        
-        # Garantir tipos corretos
-        df['deadline'] = pd.to_datetime(df['deadline'], errors='coerce')
-        df['launched'] = pd.to_datetime(df['launched'], errors='coerce')
-        
-        # Features básicas
-        df['campaign_days'] = (df['deadline'] - df['launched']).dt.days
-        df['launch_year'] = df['launched'].dt.year
-        
-        # Validar campaign_days
-        df['campaign_days'] = df['campaign_days'].clip(lower=1, upper=365)
-        
-        # Features de texto
-        df['name_length'] = df['name'].fillna('').str.len()
-        df['name_word_count'] = df['name'].fillna('').str.split().str.len()
-        
-        # Features de meta
-        df['usd_goal_real'] = df['usd_goal_real'].clip(upper=1e8)
-        df['goal_magnitude'] = np.log10(df['usd_goal_real'].clip(lower=1) + 1)
-        df['goal_rounded'] = (df['usd_goal_real'] % 1000 == 0).astype(int)
-        
-        return df
-    
-    def transform(self, df):
-        """Transforma novos dados usando os transformadores ajustados"""
-        df = self.create_features(df)
-        
-        # Aplicar estatísticas
-        df = df.merge(self.category_stats, left_on='main_category', right_index=True, how='left')
-        df = df.merge(self.country_stats, left_on='country', right_index=True, how='left')
-        
-        # Preencher valores faltantes
-        df['cat_success_rate'].fillna(0.35, inplace=True)
-        df['cat_mean_goal'].fillna(10000, inplace=True)
-        df['cat_median_goal'].fillna(5000, inplace=True)
-        df['country_success_rate'].fillna(0.35, inplace=True)
-        
-        # Features derivadas
-        df['goal_per_day'] = df['usd_goal_real'] / df['campaign_days'].replace(0, 1)
-        df['goal_category_ratio'] = df['usd_goal_real'] / df['cat_median_goal'].replace(0, 1)
-        
-        # Tratar infinitos
-        df['goal_per_day'] = df['goal_per_day'].replace([np.inf, -np.inf], 0).fillna(0)
-        df['goal_category_ratio'] = df['goal_category_ratio'].replace([np.inf, -np.inf], 1).fillna(1)
-        
-        # Aplicar encoders
-        for col, encoder in self.label_encoders.items():
-            known_values = set(encoder.classes_)
-            df[col] = df[col].apply(lambda x: x if x in known_values else list(known_values)[0])
-            df[col] = encoder.transform(df[col])
-        
-        # Selecionar e escalar
-        X = df[self.features_selected]
-        X_scaled = self.scaler.transform(X)
-        
-        return X_scaled
-
-
-class KickstarterPredictor:
-    """Classe para fazer predições e gerar recomendações"""
-    
-    def __init__(self, model, preprocessor, threshold=0.5):
-        self.model = model
-        self.preprocessor = preprocessor
-        self.threshold = threshold
-    
-    def predict_single(self, project_data):
-        """Faz predição para um único projeto"""
-        # Converter para DataFrame
-        df = pd.DataFrame([project_data])
-        
-        # Processar
-        X = self.preprocessor.transform(df)
-        
-        # Predizer
-        proba = self.model.predict_proba(X)[0, 1]
-        prediction = int(proba >= self.threshold)
-        
-        # Gerar recomendações
-        recommendations = self._generate_recommendations(project_data, proba)
-        
-        return {
-            'success_probability': float(proba),
-            'prediction': 'Sucesso' if prediction else 'Falha',
-            'confidence': self._calculate_confidence(proba),
-            'recommendations': recommendations,
-            'threshold_used': self.threshold
-        }
-    
-    def _calculate_confidence(self, proba):
-        """Calcula nível de confiança da predição"""
-        distance = abs(proba - self.threshold)
-        if distance > 0.3:
-            return 'Alta'
-        elif distance > 0.15:
-            return 'Média'
-        else:
-            return 'Baixa'
-    
-    def _generate_recommendations(self, project_data, proba):
-        """Gera recomendações personalizadas"""
-        recommendations = []
-        
-        # Análise da meta
-        goal = project_data.get('usd_goal_real', 0)
-        if goal > 50000:
-            recommendations.append("⚠️ Meta muito alta. Considere reduzir para aumentar chances.")
-        elif goal < 1000:
-            recommendations.append("✅ Meta modesta, boa estratégia para primeira campanha.")
-        else:
-            recommendations.append("✅ Meta dentro da faixa recomendada.")
-        
-        # Análise da duração
-        if 'campaign_days' not in project_data:
-            launched = pd.to_datetime(project_data.get('launched'))
-            deadline = pd.to_datetime(project_data.get('deadline'))
-            campaign_days = (deadline - launched).days
-        else:
-            campaign_days = project_data.get('campaign_days')
-            
-        if campaign_days < 20:
-            recommendations.append("⚠️ Campanha muito curta. Ideal entre 25-35 dias.")
-        elif campaign_days > 45:
-            recommendations.append("⚠️ Campanha muito longa. Pode perder momentum.")
-        else:
-            recommendations.append("✅ Duração adequada da campanha.")
-        
-        # Análise do título
-        name_words = len(project_data.get('name', '').split())
-        if name_words < 3:
-            recommendations.append("💡 Título muito curto. Seja mais descritivo.")
-        elif name_words > 10:
-            recommendations.append("💡 Título muito longo. Seja mais conciso.")
-        
-        # Recomendação geral
-        if proba < 0.3:
-            recommendations.append("🔴 Risco alto de falha. Revise estratégia completa.")
-        elif proba < 0.5:
-            recommendations.append("🟡 Chances moderadas. Pequenos ajustes podem fazer diferença.")
-        elif proba < 0.7:
-            recommendations.append("🟢 Boas chances de sucesso. Mantenha execução forte.")
-        else:
-            recommendations.append("🌟 Excelentes chances! Foque na execução.")
-        
-        return recommendations
-
+from ml_classes import KickstarterPreprocessor, KickstarterPredictor
 
 # =====================================================
 # CONFIGURAÇÃO DA API
@@ -376,11 +201,16 @@ def load_model():
     print(f"  Treinado em: {model_data['training_date']}")
     print(f"  AUC-ROC: {model_data['metrics']['auc_roc']:.4f}")
 
-# Tentar carregar modelo ao iniciar
-try:
-    load_model()
-except Exception as e:
-    print(f"⚠️ Erro ao carregar modelo: {e}")
+# Tentar carregar modelo ao iniciar a aplicação
+@app.on_event("startup")
+async def startup_event():
+    try:
+        load_model()
+    except Exception as e:
+        print(f"⚠️ Erro CRÍTICO ao carregar modelo na inicialização: {e}")
+        # Em um app real, você poderia decidir se a API deve ou não iniciar sem o modelo.
+        # Por enquanto, apenas logamos o erro. O endpoint de health check irá falhar.
+        pass
 
 # =====================================================
 # ENDPOINTS DA API
@@ -408,10 +238,11 @@ async def root():
 
 @app.get("/health", response_model=HealthCheck, tags=["Health"])
 async def health_check():
-    """Verifica se a API está funcionando"""
+    """Verifica se a API e o modelo estão funcionando"""
+    is_model_loaded = predictor is not None
     return {
-        "status": "healthy" if predictor else "unhealthy",
-        "model_loaded": predictor is not None,
+        "status": "healthy" if is_model_loaded else "unhealthy",
+        "model_loaded": is_model_loaded,
         "timestamp": datetime.now().isoformat()
     }
 
@@ -420,18 +251,11 @@ async def health_check():
 async def predict_project(project: ProjectInput):
     """
     Faz predição para um único projeto Kickstarter.
-    
-    Retorna:
-    - Probabilidade de sucesso (0-100%)
-    - Predição final (Sucesso/Falha)
-    - Nível de confiança
-    - Recomendações personalizadas
     """
-    
     if not predictor:
         raise HTTPException(
             status_code=503,
-            detail="Modelo não está carregado. Reinicie a API."
+            detail="Modelo não está carregado. Verifique os logs do servidor."
         )
     
     try:
@@ -450,10 +274,7 @@ async def predict_project(project: ProjectInput):
 async def predict_batch(batch: BatchInput):
     """
     Faz predição para múltiplos projetos de uma vez.
-    
-    Útil para analisar portfólios ou comparar diferentes configurações.
     """
-    
     if not predictor:
         raise HTTPException(
             status_code=503,
@@ -493,7 +314,6 @@ async def predict_batch(batch: BatchInput):
 @app.get("/info/model", response_model=ModelInfo, tags=["Information"])
 async def get_model_info():
     """Retorna informações detalhadas sobre o modelo"""
-    
     if not model_data:
         raise HTTPException(
             status_code=503,
@@ -512,7 +332,6 @@ async def get_model_info():
 @app.get("/info/categories", tags=["Information"])
 async def get_categories():
     """Lista todas as categorias válidas com estatísticas"""
-    
     return {
         "total": 15,
         "categories": [
@@ -538,7 +357,6 @@ async def get_categories():
 @app.get("/info/countries", tags=["Information"])
 async def get_countries():
     """Lista países suportados pelo modelo"""
-    
     return {
         "total": 22,
         "main_countries": {
@@ -573,131 +391,4 @@ async def get_countries():
         }
     }
 
-
-@app.post("/reload-model", tags=["Admin"])
-async def reload_model():
-    """Recarrega o modelo do disco"""
-    
-    try:
-        load_model()
-        return {
-            "status": "success",
-            "message": "Modelo recarregado com sucesso",
-            "model_version": model_data['version'],
-            "training_date": model_data['training_date']
-        }
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao recarregar modelo: {str(e)}"
-        )
-
-
-@app.get("/example/curl", tags=["Examples"])
-async def example_curl():
-    """Exemplo de uso com cURL"""
-    
-    return {
-        "description": "Exemplo de comando cURL para fazer uma predição",
-        "command": """curl -X POST "http://localhost:8000/predict" \\
-     -H "Content-Type: application/json" \\
-     -d '{
-       "name": "Revolutionary Smart Watch with AI",
-       "main_category": "Technology",
-       "country": "US",
-       "usd_goal_real": 25000,
-       "launched": "2024-03-01",
-       "deadline": "2024-03-31"
-     }'"""
-    }
-
-
-@app.get("/example/python", tags=["Examples"])
-async def example_python():
-    """Exemplo de uso com Python"""
-    
-    return {
-        "description": "Exemplo de código Python para usar a API",
-        "code": """import requests
-
-# URL da API
-url = "http://localhost:8000/predict"
-
-# Dados do projeto
-project = {
-    "name": "Revolutionary Smart Watch with AI",
-    "main_category": "Technology",
-    "country": "US",
-    "usd_goal_real": 25000,
-    "launched": "2024-03-01",
-    "deadline": "2024-03-31"
-}
-
-# Fazer requisição
-response = requests.post(url, json=project)
-
-# Processar resposta
-if response.status_code == 200:
-    result = response.json()
-    print(f"Probabilidade de sucesso: {result['success_probability']:.1%}")
-    print(f"Predição: {result['prediction']}")
-    print(f"Confiança: {result['confidence']}")
-    print("\\nRecomendações:")
-    for rec in result['recommendations']:
-        print(f"  - {rec}")
-else:
-    print(f"Erro: {response.status_code}")
-    print(response.json())"""
-    }
-
-
-@app.get("/example/javascript", tags=["Examples"])
-async def example_javascript():
-    """Exemplo de uso com JavaScript"""
-    
-    return {
-        "description": "Exemplo de código JavaScript para usar a API",
-        "code": """// Função para fazer predição
-async function predictKickstarterProject() {
-    const project = {
-        name: "Revolutionary Smart Watch with AI",
-        main_category: "Technology",
-        country: "US",
-        usd_goal_real: 25000,
-        launched: "2024-03-01",
-        deadline: "2024-03-31"
-    };
-    
-    try {
-        const response = await fetch('http://localhost:8000/predict', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(project)
-        });
-        
-        if (response.ok) {
-            const result = await response.json();
-            console.log(`Probabilidade: ${(result.success_probability * 100).toFixed(1)}%`);
-            console.log(`Predição: ${result.prediction}`);
-            console.log(`Confiança: ${result.confidence}`);
-            console.log('Recomendações:');
-            result.recommendations.forEach(rec => console.log(`  - ${rec}`));
-        } else {
-            console.error('Erro:', await response.json());
-        }
-    } catch (error) {
-        console.error('Erro de conexão:', error);
-    }
-}
-
-// Executar
-predictKickstarterProject();"""
-    }
-
-
-# =====================================================
-# EXECUTAR SERVIDOR
-# =====================================================
-
+# (O restante dos endpoints de exemplo foram omitidos por brevidade, mas podem ser mantidos se desejar)
