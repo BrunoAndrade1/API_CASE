@@ -715,10 +715,11 @@ if __name__ == "__main__":
     
     # Configurações do servidor
 # Correct code
+# Em api.py
 uvicorn.run(
     "api:app",
-    host="0.0.0.0",  # Ensure this string is correctly quoted
+    host="0.0.0.0",
     port=8000,
-    reload=True,
+    reload=False,  # <-- Mude para False
     log_level="info"
 )
