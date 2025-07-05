@@ -8,6 +8,7 @@ import json
 import time
 import re
 import os
+import joblib 
 from typing import Dict, Optional, Any
 # ========== ADICIONAR APÓS OS IMPORTS ==========
 
