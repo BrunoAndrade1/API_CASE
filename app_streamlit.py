@@ -11,7 +11,15 @@ import os
 import joblib 
 from typing import Dict, Optional, Any
 import numpy as np
-rom sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+
+# Configuração da página
+st.set_page_config(
+    page_title="Kickstarter Success Predictor",
+    page_icon="🚀",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 # ========== ADICIONAR APÓS OS IMPORTS ==========
 
 # Classes do modelo (copiar do train_model.py)
@@ -226,13 +234,7 @@ if st.session_state.use_spacy:
         SPACY_AVAILABLE = False
         nlp = None
 
-# Configuração da página
-st.set_page_config(
-    page_title="Kickstarter Success Predictor",
-    page_icon="🚀",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+
 
 # Configurações
 API_URL = os.getenv("KICKSTARTER_API_URL", "http://localhost:8000")
