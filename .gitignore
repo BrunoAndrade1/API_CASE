@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+
+# Modelo e dados (não enviar para GitHub)
+*.pkl
+*.joblib
+*.csv
+kickstarter_model_v1.pkl
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Environment
+.env
+.env.local
