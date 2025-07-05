@@ -8,3 +8,4 @@ pydantic
 python-multipart
 spacy
 https://github.com/explosion/spacy-models/releases/download/pt_core_news_sm-3.7.0/pt_core_news_sm-3.7.0.tar.gz
+gdown==4.7.1
