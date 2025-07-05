@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: kickstarter-predictor
+    runtime: python
+    buildCommand: |
+      pip install -r requirements.txt
+      python download_model.py
+    startCommand: streamlit run app_streamlit.py --server.port=$PORT --server.address=0.0.0.0
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.18
+      - key: MODEL_FILE_ID
+        sync: false  # Você vai configurar isso no Render dashboard
