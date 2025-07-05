@@ -1526,7 +1526,7 @@ with st.container():
     
     with chat_main_col2:
         # Área de mensagens expandida
-        chat_area = st.container(height=250)
+        chat_area = st.container()
         with chat_area:
             # Se não houver mensagens, mostrar mensagem inicial
             if len(st.session_state.chat_messages) == 0:
