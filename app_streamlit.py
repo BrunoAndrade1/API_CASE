@@ -10,6 +10,8 @@ import re
 import os
 import joblib 
 from typing import Dict, Optional, Any
+import numpy as np
+rom sklearn.preprocessing import StandardScaler, LabelEncoder
 # ========== ADICIONAR APÓS OS IMPORTS ==========
 
 # Classes do modelo (copiar do train_model.py)
